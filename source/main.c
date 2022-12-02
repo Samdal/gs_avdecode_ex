@@ -24,7 +24,7 @@ void app_update()
 
     gsi_defaults(&gsi);
     gsi_camera2D(&gsi, fb.x, fb.y);
-    gsi_rectvd(&gsi, gs_v2s(0.0f), fb, gs_v2s(0.f), gs_v2s(1.f), GS_COLOR_WHITE, GS_GRAPHICS_PRIMITIVE_TRIANGLES);
+    //gsi_rectvd(&gsi, gs_v2s(0.0f), fb, gs_v2s(0.f), gs_v2s(1.f), GS_COLOR_WHITE, GS_GRAPHICS_PRIMITIVE_TRIANGLES);
 
     int res = gs_avdecode_next_frame(&video);
     if (res) gs_quit();

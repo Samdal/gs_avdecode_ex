@@ -101,6 +101,7 @@ open_codec_context(
         int *stream_idx,
         AVCodecContext **dec_ctx,
         AVFormatContext *fmt_ctx,
+        int* alpha,
         enum AVMediaType type
 ) {
         int ret, stream_index;
@@ -116,8 +117,18 @@ open_codec_context(
                 stream_index = ret;
                 st = ctx->fmt_ctx->streams[stream_index];
 
-                /* find decoder for the stream */
-                dec = avcodec_find_decoder(st->codecpar->codec_id);
+                int a = 0;
+                if (alpha) {
+                        AVDictionaryEntry* tag = NULL;
+                        tag = av_dict_get(st->metadata, "ALPHA_MODE", tag, 0);
+                        a = tag && atoi(tag->value);
+                        *alpha = a;
+                }
+
+                // find decoder for the stream
+                // use libvpx for transparent video
+                dec = a ? avcodec_find_decoder_by_name("libvpx-vp9")
+                        : avcodec_find_decoder(st->codecpar->codec_id);
                 if (!dec) {
                         fprintf(stderr, "gs_avdecode.h: Failed to find %s codec\n",
                                 av_get_media_type_string(type));
@@ -175,21 +186,19 @@ gs_avdecode_init(const char* path, gs_avdecode_ctx_t* ctx, gs_graphics_texture_d
         }
 
         int ret = 0;
-        if (open_codec_context(ctx, &ctx->video_stream_idx, &ctx->video_dec_ctx, ctx->fmt_ctx, AVMEDIA_TYPE_VIDEO) >= 0) {
+        if (open_codec_context(ctx, &ctx->video_stream_idx, &ctx->video_dec_ctx, ctx->fmt_ctx, &ctx->alpha, AVMEDIA_TYPE_VIDEO) >= 0) {
                 ctx->video_stream = ctx->fmt_ctx->streams[ctx->video_stream_idx];
                 ctx->width = ctx->video_dec_ctx->width;
                 ctx->height = ctx->video_dec_ctx->height;
                 ctx->pix_fmt = ctx->video_dec_ctx->pix_fmt;
-                if (ctx->pix_fmt == AV_PIX_FMT_YUVA420P ||
-                    ctx->pix_fmt == AV_PIX_FMT_ARGB ||
-                    ctx->pix_fmt == AV_PIX_FMT_RGBA)
-                        ctx->alpha = 1;
+                if (ctx->alpha && ctx->pix_fmt == AV_PIX_FMT_YUV420P)
+                        ctx->pix_fmt = AV_PIX_FMT_YUVA420P;
                 ctx->sws = sws_getContext(ctx->width, ctx->height, ctx->pix_fmt,
                                           ctx->width, ctx->height, ctx->alpha ? AV_PIX_FMT_RGBA : AV_PIX_FMT_RGB24,
                                           SWS_BICUBIC, 0, 0, 0);
         }
 
-        if (open_codec_context(ctx, &ctx->audio_stream_idx, &ctx->audio_dec_ctx, ctx->fmt_ctx, AVMEDIA_TYPE_AUDIO) >= 0) {
+        if (open_codec_context(ctx, &ctx->audio_stream_idx, &ctx->audio_dec_ctx, ctx->fmt_ctx, NULL, AVMEDIA_TYPE_AUDIO) >= 0) {
                 ctx->audio_stream = ctx->fmt_ctx->streams[ctx->audio_stream_idx];
         }
 
