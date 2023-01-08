@@ -12,7 +12,6 @@ static gs_asset_texture_t tex;
 static gs_asset_texture_t ptex;
 static gs_avdecode_ctx_t video;
 static gs_avdecode_pthread_t pvideo;
-static pthread_t video_thread;
 
 void app_update()
 {
@@ -45,7 +44,7 @@ void app_update()
                 gsi_texture(&gsi, ptex.hndl);
                 gsi_rectvd(&gsi, gs_v2(fb.x/2, fb.y/2), gs_v2(fb.x/2, fb.y/2), gs_v2s(0.f), gs_v2s(1.f), GS_COLOR_WHITE, GS_GRAPHICS_PRIMITIVE_TRIANGLES);
         } else if (pvideo.done > 0) {
-                gs_avdecode_pthread_destroy(&pvideo, &video_thread, &ptex);
+                gs_avdecode_pthread_destroy(&pvideo, &ptex);
                 pvideo.done = -1;
         }
 
@@ -60,7 +59,7 @@ void app_init()
 
         int res = gs_avdecode_init(filename, &video, NULL, &tex);
 
-        int res2 = gs_avdecode_pthread_play_video(&pvideo, &video_thread, filename, NULL, &ptex);
+        int res2 = gs_avdecode_pthread_play_video(&pvideo, filename, NULL, &ptex);
 
         if (res) {
                 gs_println("Unable to initialize video '%s' (error code %d)", filename, res);

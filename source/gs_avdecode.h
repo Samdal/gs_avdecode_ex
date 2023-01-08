@@ -70,6 +70,7 @@ extern void gs_avdecode_destroy(gs_avdecode_ctx_t* ctx, gs_asset_texture_t* tex)
 //
 // when the decoder thread exits it sets done to 1
 typedef struct gs_avdecode_pthread_s {
+        pthread_t thread;
         pthread_attr_t attr;
 
         gs_avdecode_ctx_t video;
@@ -78,9 +79,9 @@ typedef struct gs_avdecode_pthread_s {
         _Atomic int loop; // TODO...
         _Atomic int done;
 } gs_avdecode_pthread_t;
-extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, pthread_t* thread, const char* path,
+extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path,
                                           const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
-extern void gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, pthread_t* thread, gs_asset_texture_t* tex);
+extern void gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, gs_asset_texture_t* tex);
 
 #define gs_avdecode_aquire_m(_ctxp, ...)                                \
         do {                                                            \
@@ -424,7 +425,7 @@ _gs_avdecode_pthread_player(void* data)
 }
 
 int
-gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, pthread_t* thread, const char* path,
+gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path,
                                const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out)
 {
         if (!ctxp) return 2;
@@ -435,14 +436,14 @@ gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, pthread_t* thread, c
         int res = gs_avdecode_init(path, &ctxp->video, desc, out);
         if (res) return res;
 
-        pthread_create(thread, &ctxp->attr, &_gs_avdecode_pthread_player, ctxp);
+        pthread_create(&ctxp->thread, &ctxp->attr, &_gs_avdecode_pthread_player, ctxp);
         // TODO: error code from pthread functions as well
 
         return res;
 }
 
 void
-gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, pthread_t* thread, gs_asset_texture_t* tex)
+gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, gs_asset_texture_t* tex)
 {
 
         pthread_attr_destroy(&ctxp->attr);
