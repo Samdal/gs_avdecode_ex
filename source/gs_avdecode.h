@@ -7,9 +7,6 @@
  * before including header in one and only one source file
  * to implement declared functions.
  *
- * #define GS_AVDECODE_NO_DECLARE_CLOCK_GETTIME
- * if it's being redefined on windows (used for timing for multi-threaded decoding)
- *
  * requirers linking with ffmpeg stuff.
  * on gcc/clang that would for example be
  *       -lavcodec -lavformat -lavcodec -lswresample -lswscale -lavutil
@@ -22,7 +19,6 @@
 
 #include <libavutil/imgutils.h>
 #include <libavutil/samplefmt.h>
-#include <libavutil/timestamp.h>
 #include <libavcodec/avcodec.h>
 #include <libavcodec/version.h>
 #include <libavformat/avformat.h>
@@ -33,6 +29,7 @@
 
 #include <pthread.h>
 #include <time.h>
+#include <stdatomic.h>
 
 _Static_assert(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(55, 38, 100), "FFmpeg major version too low: " LIBAVCODEC_IDENT " needs Lavc55.38.100");
 
@@ -56,20 +53,46 @@ typedef struct gs_avdecode_ctx_s {
         void* img[1];
 } gs_avdecode_ctx_t;
 
-typedef struct gs_avdecode_pthread_s {
-        pthread_mutex_t lock;
-
-        gs_avdecode_ctx_t video;
-
-        int new_frame;
-        _Atomic int done;
-} gs_avdecode_pthread_t;
-
 // return zero on success
 // TODO: specify weather <0 is error or if its just non-zero
+// TODO: gs_avdecode_rewind
 extern int gs_avdecode_init(const char* path, gs_avdecode_ctx_t* ctx, const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
 extern int gs_avdecode_next_frame(gs_avdecode_ctx_t* ctx); // -1 if all frames read
 extern void gs_avdecode_destroy(gs_avdecode_ctx_t* ctx, gs_asset_texture_t* tex);
+
+
+// Multi-threading usage:
+// Atomic integers are used instead of locks (for performance reasons)
+//
+// if new_frame is 0, then the "main" thread(s) shall not access anything
+// if new_frame is -1 then the "decoder" thread shall not access anything
+// if new_frame is 1, then a frame is complete and either thread can do a cmpxchg to aquire it.
+//
+// when the decoder thread exits it sets done to 1
+typedef struct gs_avdecode_pthread_s {
+        pthread_attr_t attr;
+
+        gs_avdecode_ctx_t video;
+
+        _Atomic int new_frame;
+        _Atomic int loop; // TODO...
+        _Atomic int done;
+} gs_avdecode_pthread_t;
+extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, pthread_t* thread, const char* path,
+                                          const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
+extern void gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, pthread_t* thread, gs_asset_texture_t* tex);
+
+#define gs_avdecode_aquire_m(_ctxp, ...)                                \
+        do {                                                            \
+                int __check = 1;                                        \
+                if (atomic_compare_exchange_strong(&(_ctxp)->new_frame, &__check, -1)) { \
+                        __VA_ARGS__                                     \
+                        (_ctxp)->new_frame = 0;                         \
+                }                                                       \
+        } while(0)
+
+
+
 
 #ifdef GS_AVDECODE_IMPL
 
@@ -345,79 +368,58 @@ gs_avdecode_destroy(gs_avdecode_ctx_t* ctx, gs_asset_texture_t* tex)
         }
 }
 
-#ifdef _WIN32
-#ifndef GS_AVDECODE_NO_DECLARE_CLOCK_GETTIME
-// untested
-struct timespec { long tv_sec; long tv_nsec; };
-static int
-clock_gettime(int, struct timespec *spec)
-{
-        __int64 wintime;
-        GetSystemTimeAsFileTime((FILETIME*)&wintime);
-        wintime      -= 116444736000000000i64;       // 1jan1601 to 1jan1970
-        spec->tv_sec  = wintime / 10000000i64;       // seconds
-        spec->tv_nsec = wintime % 10000000i64 * 100; // nano-seconds
-        return 0;
-}
-#endif // GS_AVDECODE_NO_DECLARE_CLOCK_GETTIME
-#endif // _WIN32
-
 static void*
 _gs_avdecode_pthread_player(void* data)
 {
         gs_avdecode_pthread_t* ctxp = data;
         gs_avdecode_ctx_t* ctx = &ctxp->video;
+        ctxp->new_frame = 0;
 
-        pthread_mutex_lock(&ctxp->lock);
         const float frametime = ctx->frametime * 1e3;
-        pthread_mutex_unlock(&ctxp->lock);
         int frames = 0;
 
-        struct timespec ts_start;
-        clock_gettime(CLOCK_MONOTONIC, &ts_start);
+        const float t_start = gs_platform_elapsed_time();
 
         int res = 0;
         int prerendered = 0;
-        const float dt = 0.001;
+        const float dt = 0.05;
         for (;;) {
-                if (!prerendered) {
-                        pthread_mutex_lock(&ctxp->lock);
-                        if (ctxp->new_frame == 0) {
-                                res = gs_avdecode_next_frame(ctx);
-                                prerendered = 1;
-                        }
-                        pthread_mutex_unlock(&ctxp->lock);
+                if (!prerendered && ctxp->new_frame == 0) {
+                        res = gs_avdecode_next_frame(ctx);
+                        prerendered = 1;
                 }
 
-                float diff = 0.0;
-                struct timespec ts_check;
-                clock_gettime(CLOCK_MONOTONIC, &ts_check);
-                diff  = (ts_check.tv_sec  - ts_start.tv_sec)  * 1e3;
-                diff += (ts_check.tv_nsec - ts_start.tv_nsec) * 1e-6;
+                const float diff = gs_platform_elapsed_time() - t_start;
 
-                if (diff + dt < frametime * frames) {
+                if (diff + dt < frametime * frames
+                    // also wait for the first frame, this prevents possible jitter
+                    || (frames == 1 && ctxp->new_frame)) {
                         gs_platform_sleep(dt);
                         continue;
                 }
 
-                pthread_mutex_lock(&ctxp->lock);
+                int locked = 0;
+                if (ctxp->new_frame == 0) {
+                        locked = 1;
+                } else {
+                        int check = 1;
+                        locked = atomic_compare_exchange_strong(&ctxp->new_frame, &check, 0);
+                }
+                if (!locked)
+                        continue;
+
                 if (!prerendered) res = gs_avdecode_next_frame(ctx);
+
                 ctxp->new_frame = 1;
-                pthread_mutex_unlock(&ctxp->lock);
                 frames++;
+
                 prerendered = 0;
 
                 if (res < 0) break;
         }
 
-        pthread_mutex_lock(&ctxp->lock);
         ctxp->done = 1;
-        pthread_mutex_unlock(&ctxp->lock);
-        gs_platform_sleep(0.001f);
-        pthread_mutex_lock(&ctxp->lock);
 
-        gs_avdecode_destroy(ctx, NULL);
-        pthread_mutex_destroy(&ctxp->lock);
         return NULL;
 }
 
@@ -428,14 +430,23 @@ gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, pthread_t* thread, c
         if (!ctxp) return 2;
         *ctxp = (gs_avdecode_pthread_t){0};
 
-        pthread_mutex_init(&ctxp->lock, NULL);
+        pthread_attr_init(&ctxp->attr);
+        pthread_attr_setdetachstate(&ctxp->attr, PTHREAD_CREATE_DETACHED);
         int res = gs_avdecode_init(path, &ctxp->video, desc, out);
         if (res) return res;
 
-        pthread_create(thread, NULL, &_gs_avdecode_pthread_player, ctxp);
+        pthread_create(thread, &ctxp->attr, &_gs_avdecode_pthread_player, ctxp);
         // TODO: error code from pthread functions as well
 
         return res;
+}
+
+void
+gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, pthread_t* thread, gs_asset_texture_t* tex)
+{
+
+        pthread_attr_destroy(&ctxp->attr);
+        gs_avdecode_destroy(&ctxp->video, tex);
 }
 
 #endif // GS_AVDECODE_IMPL
