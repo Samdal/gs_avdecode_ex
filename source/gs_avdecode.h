@@ -108,7 +108,7 @@ typedef struct gs_avdecode_pthread_s {
         gs_avdecode_ctx_t video;
 
         _Atomic int new_frame;
-        _Atomic int loops; // 0 = don't loop, >0 loop x times, <0 loop forever
+        _Atomic int loop; // 0 = don't loop, >0 loop x times, <0 loop forever
         _Atomic enum avdecode_pthread_states state;
 } gs_avdecode_pthread_t;
 
@@ -497,6 +497,21 @@ pthread_decoder_start:
                 if (res < 0) break;
         }
 
+        if (ctxp->loop) {
+                if (ctxp->new_frame != AVDECODE_DECODING) {
+                        for (; ; gs_platform_sleep(0.01)) {
+                                int check = AVDECODE_FRAME_COMPLETE;
+                                int locked = atomic_compare_exchange_strong(&ctxp->new_frame, &check, AVDECODE_DECODING);
+                                if (locked) break;
+                        }
+                }
+
+                gs_avdecode_seek(&ctxp->video, INT64_MIN, AVDECODE_SEEK_BACKWARD);
+                ctxp->state = AVDECODE_START;
+                ctxp->loop--;
+                goto pthread_decoder_start;
+        }
+
         ctxp->state = AVDECODE_DONE;
         goto pthread_decoder_start;
 }
@@ -507,7 +522,6 @@ gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path, in
 {
         int res = 0;
         if (!ctxp) return 2;
-        *ctxp = (gs_avdecode_pthread_t){0};
 
         if (init_decoder) {
                 res = gs_avdecode_init(path, &ctxp->video, desc, out);

@@ -41,9 +41,10 @@ void app_update()
                         gs_graphics_texture_request_update(&cb, ptex.hndl, &ptex.desc);
                 );
         } else if (pvideo.state == AVDECODE_DONE) {
-                gs_avdecode_seek(&pvideo.video, INT64_MIN, AVDECODE_SEEK_BACKWARD);
-                pvideo.state = AVDECODE_START;
-                //gs_quit();
+                //gs_avdecode_seek(&pvideo.video, INT64_MIN, AVDECODE_SEEK_BACKWARD);
+                //pvideo.state = AVDECODE_START;
+                pvideo.state = AVDECODE_DIE;
+                gs_quit();
         }
 
         gsi_texture(&gsi, ptex.hndl);
@@ -60,6 +61,7 @@ void app_init()
 
         int res = gs_avdecode_init(filename, &video, NULL, &tex);
 
+        pvideo.loop = 2;
         int res2 = gs_avdecode_pthread_play_video(&pvideo, filename, 1, NULL, &ptex);
 
         if (res || res2) {
