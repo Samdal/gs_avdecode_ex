@@ -84,16 +84,18 @@ enum avdecode_pthread_states {
         // NOTE: the worker thread will not rewind by itself
 
         AVDECODE_RUNNING, // Worker thread is decoding, on complete it changes to DONE
+        AVDECODE_STOP, // Will froce decoding thread to switch to DONE ASAP
 
         AVDECODE_DIE = -1, // Worker thread will exit on next state check
         AVDECODE_DEAD = -2, // Worker thread will exit on next state check
 };
-
-// !!!!! NOTE(Halvard) !!!!! //
-// You currently cannot change the state while it's RUNNING
-// State changes are only legal when the state is DONE
+// Changing state from RUNNING does not guarantuee immidiate
+// withdrawal from accessing common data.
+// To ensure that, you must set it to STOP and then wait for DONE.
 //
 // Setting state to DEAD and RUNNING on main thread is illegal
+//////////////////
+
 
 enum avdecode_pthread_lock {
         AVDECODE_FRAME_COMPLETE = 1, // frame is complete and either thread can do a cmpxchg to aquire it.
@@ -434,9 +436,13 @@ _gs_avdecode_pthread_player(void* data)
 
 pthread_decoder_start:
         // check for state changes
+        {
+                int check = AVDECODE_STOP;
+                atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_DONE);
+        }
         for (; ; gs_platform_sleep(0.01)) {
                 int check = AVDECODE_START;
-                int exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_DECODING);
+                int exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_RUNNING);
                 if (exit) break;
 
                 check = AVDECODE_DIE;
@@ -463,6 +469,9 @@ pthread_decoder_start:
         int prerendered = 0;
         const float dt = 0.05;
         for (;;) {
+                if (ctxp->state != AVDECODE_RUNNING)
+                        goto pthread_decoder_start;
+
                 if (!prerendered && ctxp->new_frame == AVDECODE_DECODING) {
                         res = gs_avdecode_next_frame(ctx);
                         prerendered = 1;
