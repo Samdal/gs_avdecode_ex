@@ -54,7 +54,7 @@ typedef struct gs_avdecode_ctx_s {
 } gs_avdecode_ctx_t;
 
 // return zero on success
-// TODO: specify weather <0 is error or if its just non-zero
+// TODO: specify whether <0 is error or if its just non-zero
 // TODO: gs_avdecode_rewind
 extern int gs_avdecode_init(const char* path, gs_avdecode_ctx_t* ctx, const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
 extern int gs_avdecode_next_frame(gs_avdecode_ctx_t* ctx); // -1 if all frames read
@@ -83,7 +83,7 @@ extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const cha
                                           const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
 extern void gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, gs_asset_texture_t* tex);
 
-#define gs_avdecode_aquire_m(_ctxp, ...)                                \
+#define gs_avdecode_try_aquire_m(_ctxp, ...)                            \
         do {                                                            \
                 int __check = 1;                                        \
                 if (atomic_compare_exchange_strong(&(_ctxp)->new_frame, &__check, -1)) { \

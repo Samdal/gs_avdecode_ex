@@ -36,7 +36,7 @@ void app_update()
         gsi_rectvd(&gsi, gs_v2s(0.0f), fb, gs_v2s(0.f), gs_v2s(1.f), GS_COLOR_WHITE, GS_GRAPHICS_PRIMITIVE_TRIANGLES);
 
         if (!pvideo.done) {
-                gs_avdecode_aquire_m(&pvideo,
+                gs_avdecode_try_aquire_m(&pvideo,
                         memcpy(*ptex.desc.data, *pvideo.video.img, pvideo.video.img_sz);
                         gs_graphics_texture_request_update(&cb, ptex.hndl, &ptex.desc);
                 );
@@ -44,8 +44,8 @@ void app_update()
                 gsi_texture(&gsi, ptex.hndl);
                 gsi_rectvd(&gsi, gs_v2(fb.x/2, fb.y/2), gs_v2(fb.x/2, fb.y/2), gs_v2s(0.f), gs_v2s(1.f), GS_COLOR_WHITE, GS_GRAPHICS_PRIMITIVE_TRIANGLES);
         } else if (pvideo.done > 0) {
-                gs_avdecode_pthread_destroy(&pvideo, &ptex);
                 pvideo.done = -1;
+                gs_quit();
         }
 
         gsi_renderpass_submit(&gsi, &cb, gs_v4(0, 0, fb.x, fb.y), gs_color(10, 10, 10, 255));
@@ -70,6 +70,7 @@ void app_init()
 void app_shutdown()
 {
         gs_avdecode_destroy(&video, &tex);
+        gs_avdecode_pthread_destroy(&pvideo, &ptex);
 
         gs_immediate_draw_free(&gsi);
         gs_command_buffer_free(&cb);
