@@ -61,14 +61,33 @@ extern int gs_avdecode_next_frame(gs_avdecode_ctx_t* ctx); // -1 if all frames r
 extern void gs_avdecode_destroy(gs_avdecode_ctx_t* ctx, gs_asset_texture_t* tex);
 
 
-// Multi-threading usage:
+//////////////////////////////////
+// Multi-Thread stuff
+//
 // Atomic integers are used instead of locks (for performance reasons)
 //
-// if new_frame is 0, then the "main" thread(s) shall not access anything
-// if new_frame is -1 then the "decoder" thread shall not access anything
-// if new_frame is 1, then a frame is complete and either thread can do a cmpxchg to aquire it.
-//
-// when the decoder thread exits it sets done to 1
+
+enum avdecode_pthread_states {
+        AVDECODE_START, // Worker thread will change to running ASAP
+        AVDECODE_DONE, // Worker thread will await state changes (and not touch anything else)
+        // NOTE: the worker thread will not rewind by itself
+
+        AVDECODE_RUNNING, // Worker thread is decoding, on complete it changes to DONE
+
+        AVDECODE_DIE = -1, // Worker thread will exit on next state check
+        AVDECODE_DEAD = -2, // Worker thread will exit on next state check
+};
+
+// !!!!! NOTE(Halvard) !!!!! //
+// You currently cannot change the state while it's RUNNING
+// State changes are only legal when the state is DONE
+
+enum avdecode_pthread_lock {
+        AVDECODE_FRAME_COMPLETE = 1, // frame is complete and either thread can do a cmpxchg to aquire it.
+        AVDECODE_DECODING = 0, // the main thread shall not access anything
+        AVDECODE_WAIT = -1, // the decoder thread shall not access anything
+};
+
 typedef struct gs_avdecode_pthread_s {
         pthread_t thread;
         pthread_attr_t attr;
@@ -76,8 +95,8 @@ typedef struct gs_avdecode_pthread_s {
         gs_avdecode_ctx_t video;
 
         _Atomic int new_frame;
-        _Atomic int loop; // TODO...
-        _Atomic int done;
+        _Atomic int loops; // 0 = don't loop, >0 loop x times, <0 loop forever
+        _Atomic enum avdecode_pthread_states state;
 } gs_avdecode_pthread_t;
 extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path,
                                           const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
@@ -85,10 +104,10 @@ extern void gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, gs_asset_te
 
 #define gs_avdecode_try_aquire_m(_ctxp, ...)                            \
         do {                                                            \
-                int __check = 1;                                        \
-                if (atomic_compare_exchange_strong(&(_ctxp)->new_frame, &__check, -1)) { \
+                int __check = AVDECODE_FRAME_COMPLETE;                  \
+                if (atomic_compare_exchange_strong(&(_ctxp)->new_frame, &__check, AVDECODE_WAIT)) { \
                         __VA_ARGS__                                     \
-                        (_ctxp)->new_frame = 0;                         \
+                        (_ctxp)->new_frame = AVDECODE_DECODING;         \
                 }                                                       \
         } while(0)
 
@@ -377,7 +396,28 @@ _gs_avdecode_pthread_player(void* data)
 {
         gs_avdecode_pthread_t* ctxp = data;
         gs_avdecode_ctx_t* ctx = &ctxp->video;
-        ctxp->new_frame = 0;
+
+
+pthread_decoder_start:
+        for (;;) {
+                int check = AVDECODE_START;
+                int exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_DECODING);
+                if (exit) break;
+
+                check = AVDECODE_DIE;
+                exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_DEAD);
+                if (exit) return NULL;
+        }
+
+        // wait to get lock
+        for (int has_lock = 0; ; gs_platform_sleep(0.01)) {
+                int check = AVDECODE_FRAME_COMPLETE;
+                if (ctxp->new_frame == AVDECODE_DECODING)
+                        has_lock = 1;
+                else
+                        has_lock = atomic_compare_exchange_strong(&ctxp->new_frame, &check, AVDECODE_DECODING);
+                if (has_lock) break;
+        }
 
         const float frametime = ctx->frametime * 1e3;
         int frames = 0;
@@ -388,7 +428,7 @@ _gs_avdecode_pthread_player(void* data)
         int prerendered = 0;
         const float dt = 0.05;
         for (;;) {
-                if (!prerendered && ctxp->new_frame == 0) {
+                if (!prerendered && ctxp->new_frame == AVDECODE_DECODING) {
                         res = gs_avdecode_next_frame(ctx);
                         prerendered = 1;
                 }
@@ -403,18 +443,18 @@ _gs_avdecode_pthread_player(void* data)
                 }
 
                 int locked = 0;
-                if (ctxp->new_frame == 0) {
+                if (ctxp->new_frame == AVDECODE_DECODING) {
                         locked = 1;
                 } else {
-                        int check = 1;
-                        locked = atomic_compare_exchange_strong(&ctxp->new_frame, &check, 0);
+                        int check = AVDECODE_FRAME_COMPLETE;
+                        locked = atomic_compare_exchange_strong(&ctxp->new_frame, &check, AVDECODE_DECODING);
                 }
                 if (!locked)
                         continue;
 
                 if (!prerendered) res = gs_avdecode_next_frame(ctx);
 
-                ctxp->new_frame = 1;
+                ctxp->new_frame = AVDECODE_FRAME_COMPLETE;
                 frames++;
 
                 prerendered = 0;
@@ -422,9 +462,8 @@ _gs_avdecode_pthread_player(void* data)
                 if (res < 0) break;
         }
 
-        ctxp->done = 1;
-
-        return NULL;
+        ctxp->state = AVDECODE_DONE;
+        goto pthread_decoder_start;
 }
 
 int

@@ -35,18 +35,18 @@ void app_update()
         gsi_texture(&gsi, tex.hndl);
         gsi_rectvd(&gsi, gs_v2s(0.0f), fb, gs_v2s(0.f), gs_v2s(1.f), GS_COLOR_WHITE, GS_GRAPHICS_PRIMITIVE_TRIANGLES);
 
-        if (!pvideo.done) {
+        if (pvideo.new_frame == AVDECODE_FRAME_COMPLETE) {
                 gs_avdecode_try_aquire_m(&pvideo,
                         memcpy(*ptex.desc.data, *pvideo.video.img, pvideo.video.img_sz);
                         gs_graphics_texture_request_update(&cb, ptex.hndl, &ptex.desc);
                 );
-
-                gsi_texture(&gsi, ptex.hndl);
-                gsi_rectvd(&gsi, gs_v2(fb.x/2, fb.y/2), gs_v2(fb.x/2, fb.y/2), gs_v2s(0.f), gs_v2s(1.f), GS_COLOR_WHITE, GS_GRAPHICS_PRIMITIVE_TRIANGLES);
-        } else if (pvideo.done > 0) {
-                pvideo.done = -1;
+        } else if (pvideo.state == AVDECODE_DONE) {
+                pvideo.state = AVDECODE_DIE;
                 gs_quit();
         }
+
+        gsi_texture(&gsi, ptex.hndl);
+        gsi_rectvd(&gsi, gs_v2(fb.x/2, fb.y/2), gs_v2(fb.x/2, fb.y/2), gs_v2s(0.f), gs_v2s(1.f), GS_COLOR_WHITE, GS_GRAPHICS_PRIMITIVE_TRIANGLES);
 
         gsi_renderpass_submit(&gsi, &cb, gs_v4(0, 0, fb.x, fb.y), gs_color(10, 10, 10, 255));
         gs_graphics_command_buffer_submit(&cb);
