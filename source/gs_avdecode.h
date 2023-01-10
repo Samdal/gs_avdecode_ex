@@ -134,7 +134,9 @@ _gs_avdecode_decode_packet(gs_avdecode_ctx_t* ctx, AVCodecContext *dec, const AV
                         } else {
                                 sws_scale(ctx->sws,
                                           (const uint8_t **)(ctx->frame->data), ctx->frame->linesize,
-                                          0, ctx->height, (uint8_t**)ctx->img, (int[1]){ctx->width * (3 + ctx->alpha)}
+                                          0, ctx->height, (uint8_t**)ctx->img, (int[AV_NUM_DATA_POINTERS]){
+                                                  ctx->width * (3 + ctx->alpha), 0
+                                          }
                                         );
                         }
                 }
@@ -282,6 +284,7 @@ gs_avdecode_init(const char* path, gs_avdecode_ctx_t* ctx, const gs_graphics_tex
 
 
         ctx->img_sz = ctx->width * ctx->height * (3 + ctx->alpha);
+        ctx->img_sz += ctx->img_sz % 32; // sws_scale REQUIRES padding to (double) word alignment
         *ctx->img = malloc(ctx->img_sz);
         memset(*ctx->img, 150, ctx->img_sz);
 
