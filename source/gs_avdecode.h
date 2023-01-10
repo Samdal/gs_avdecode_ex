@@ -56,9 +56,20 @@ typedef struct gs_avdecode_ctx_s {
 // return zero on success
 // TODO: specify whether <0 is error or if its just non-zero
 // TODO: gs_avdecode_rewind
-extern int gs_avdecode_init(const char* path, gs_avdecode_ctx_t* ctx, const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
-extern int gs_avdecode_next_frame(gs_avdecode_ctx_t* ctx); // -1 if all frames read
+extern int  gs_avdecode_init(const char* path, gs_avdecode_ctx_t* ctx, const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
+extern int  gs_avdecode_next_frame(gs_avdecode_ctx_t* ctx); // -1 if all frames read
 extern void gs_avdecode_destroy(gs_avdecode_ctx_t* ctx, gs_asset_texture_t* tex);
+
+enum avdecode_seek_flags {
+        AVDECODE_SEEK_BACKWARD = AVSEEK_FLAG_BACKWARD,
+        AVDECODE_SEEK_BYTE = AVSEEK_FLAG_BYTE,
+        AVDECODE_SEEK_ANY = AVSEEK_FLAG_ANY,
+        AVDECODE_SEEK_FRAME = AVSEEK_FLAG_FRAME,
+};
+
+// >= 0 on success
+extern int gs_avdecode_seek(gs_avdecode_ctx_t* ctx, int64_t timestamp,
+                            enum avdecode_seek_flags flags);
 
 
 //////////////////////////////////
@@ -81,6 +92,8 @@ enum avdecode_pthread_states {
 // !!!!! NOTE(Halvard) !!!!! //
 // You currently cannot change the state while it's RUNNING
 // State changes are only legal when the state is DONE
+//
+// Setting state to DEAD and RUNNING on main thread is illegal
 
 enum avdecode_pthread_lock {
         AVDECODE_FRAME_COMPLETE = 1, // frame is complete and either thread can do a cmpxchg to aquire it.
@@ -98,9 +111,13 @@ typedef struct gs_avdecode_pthread_s {
         _Atomic int loops; // 0 = don't loop, >0 loop x times, <0 loop forever
         _Atomic enum avdecode_pthread_states state;
 } gs_avdecode_pthread_t;
-extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path,
+
+////////////////////
+// if init_decoder is true it will call gs_avdecode_init(ctxp->video)
+// The thread is detached, doing pthread_join is not needed.
+extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path, int init_decoder,
                                           const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
-extern void gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, gs_asset_texture_t* tex);
+
 
 #define gs_avdecode_try_aquire_m(_ctxp, ...)                            \
         do {                                                            \
@@ -113,6 +130,11 @@ extern void gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, gs_asset_te
 
 
 
+
+
+//////////////////////////////////
+// Implementation
+//
 
 #ifdef GS_AVDECODE_IMPL
 
@@ -391,6 +413,18 @@ gs_avdecode_destroy(gs_avdecode_ctx_t* ctx, gs_asset_texture_t* tex)
         }
 }
 
+int
+gs_avdecode_seek(gs_avdecode_ctx_t* ctx, int64_t timestamp,
+                            enum avdecode_seek_flags flags)
+{
+        if (!ctx) return -1;
+        if (!ctx->fmt_ctx) return -1;
+
+        return av_seek_frame(ctx->fmt_ctx, ctx->video_stream_idx, timestamp, flags);
+}
+
+
+
 static void*
 _gs_avdecode_pthread_player(void* data)
 {
@@ -399,7 +433,8 @@ _gs_avdecode_pthread_player(void* data)
 
 
 pthread_decoder_start:
-        for (;;) {
+        // check for state changes
+        for (; ; gs_platform_sleep(0.01)) {
                 int check = AVDECODE_START;
                 int exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_DECODING);
                 if (exit) break;
@@ -467,29 +502,26 @@ pthread_decoder_start:
 }
 
 int
-gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path,
+gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path, int init_decoder,
                                const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out)
 {
+        int res = 0;
         if (!ctxp) return 2;
         *ctxp = (gs_avdecode_pthread_t){0};
 
+        if (init_decoder) {
+                res = gs_avdecode_init(path, &ctxp->video, desc, out);
+                if (res) return res;
+        }
+
         pthread_attr_init(&ctxp->attr);
         pthread_attr_setdetachstate(&ctxp->attr, PTHREAD_CREATE_DETACHED);
-        int res = gs_avdecode_init(path, &ctxp->video, desc, out);
-        if (res) return res;
 
         pthread_create(&ctxp->thread, &ctxp->attr, &_gs_avdecode_pthread_player, ctxp);
+        pthread_attr_destroy(&ctxp->attr);
         // TODO: error code from pthread functions as well
 
         return res;
-}
-
-void
-gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, gs_asset_texture_t* tex)
-{
-
-        pthread_attr_destroy(&ctxp->attr);
-        gs_avdecode_destroy(&ctxp->video, tex);
 }
 
 #endif // GS_AVDECODE_IMPL
