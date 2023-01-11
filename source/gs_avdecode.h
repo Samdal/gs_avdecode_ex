@@ -7,14 +7,85 @@
  * before including header in one and only one source file
  * to implement declared functions.
  *
- * requirers linking with ffmpeg stuff.
- * on gcc/clang that would for example be
+ * Requirers linking with ffmpeg stuff.
+ * On gcc/clang that would for example be
  *       -lavcodec -lavformat -lavcodec -lswresample -lswscale -lavutil
  *
  *
- *  requires at least Lavc55.38.100 for mutex locking.
+ * Requires at least Lavc55.38.100 for mutex locking.
  *       https://stackoverflow.com/a/39786484
- */
+ *
+ *
+ * +--------------------------------------------------------------------------+
+ *
+ * ffmpeg/av codec docs:
+ *   https://ffmpeg.org/doxygen/trunk/
+ *   This is a very simple implementation with little documentation.
+ *   If you have questions, look up what the avcodec functions used do.
+ *
+ *
+ * +--------------------------------------------------------------------------+
+ *
+ * Supports:
+ * - Playing a video in a variety of container formats
+ * - Automatic selection of suitable ffmpeg decoder
+ * - Conversion from YUV etc... to RGB(A)
+ * - Transparent VP9 and VP8 video
+ * - Decoding videos on a seperate thread, with efficient atomic communication
+ * - Texture creation for gunslinger (can be omitted)
+ *
+ * Does not support:
+ * - Audio
+ * - Variable sized videos
+ * - Multiple streams in one container
+ * - Subtitles
+ *
+ * Simlpe stuff (like changing logging levels) does not have a unique interface,
+ * just use av codec functions.
+ *
+ * There are no current plans of implementing the mentioned stuff that isn't
+ * supported currently. If someone wants to do them then feel free.
+ *
+ *
+ * +--------------------------------------------------------------------------+
+ *
+ * Not all formats and so on have been well tested.
+ * "Bugs" in some files has been experienced.
+ *
+ *
+ * +--------------------------------------------------------------------------+
+ *
+ * BSD 3-Clause License
+ *
+ * Copyright (c) 2023, Halvard Samdal
+* All rights reserved.
+*
+* Redistribution and use in source and binary forms, with or without
+* modification, are permitted provided that the following conditions are met:
+*
+* 1. Redistributions of source code must retain the above copyright notice, this
+*    list of conditions and the following disclaimer.
+*
+* 2. Redistributions in binary form must reproduce the above copyright notice,
+*    this list of conditions and the following disclaimer in the documentation
+*    and/or other materials provided with the distribution.
+*
+* 3. Neither the name of the copyright holder nor the names of its
+*    contributors may be used to endorse or promote products derived from
+*    this software without specific prior written permission.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+* AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+* IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+* DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+* FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+* DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+* SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+* CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+* OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+* OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*
+*/
 
 
 #include <libavutil/imgutils.h>
@@ -31,17 +102,17 @@
 #include <time.h>
 #include <stdatomic.h>
 
-_Static_assert(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(55, 38, 100), "FFmpeg major version too low: " LIBAVCODEC_IDENT " needs Lavc55.38.100");
+_Static_assert(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(55, 38, 100), "FFmpeg major version too low: " LIBAVCODEC_IDENT ", needs Lavc55.38.100");
 
-typedef struct gs_avdecode_ctx_s {
+typedef struct gs_avdecode_context_s {
         const char* src_filename;
         int width, height;
-        int img_sz;
-        int video_stream_idx, audio_stream_idx;
+        int img_sz; // size of the allocated buffers, padded to double word
         int read_next_packet;
         int alpha;
         enum AVPixelFormat pix_fmt;
         float frametime;
+        int video_stream_idx, audio_stream_idx;
 
         AVFormatContext *fmt_ctx;
         AVCodecContext *video_dec_ctx, *audio_dec_ctx;
@@ -51,14 +122,17 @@ typedef struct gs_avdecode_ctx_s {
         struct SwsContext * sws;
 
         void* img[1];
-} gs_avdecode_ctx_t;
+} gs_avdecode_context_t;
 
-// return zero on success
-// TODO: specify whether <0 is error or if its just non-zero
-// TODO: gs_avdecode_rewind
-extern int  gs_avdecode_init(const char* path, gs_avdecode_ctx_t* ctx, const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
-extern int  gs_avdecode_next_frame(gs_avdecode_ctx_t* ctx); // -1 if all frames read
-extern void gs_avdecode_destroy(gs_avdecode_ctx_t* ctx, gs_asset_texture_t* tex);
+////////////
+// returns zero on success
+extern int gs_avdecode_init(const char* path, gs_avdecode_context_t* ctx, const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
+
+//////////
+// returns negative on error (including reaching stream end)
+extern int gs_avdecode_next_frame(gs_avdecode_context_t* ctx);
+
+extern void gs_avdecode_destroy(gs_avdecode_context_t* ctx, gs_asset_texture_t* tex);
 
 enum avdecode_seek_flags {
         AVDECODE_SEEK_BACKWARD = AVSEEK_FLAG_BACKWARD,
@@ -68,8 +142,10 @@ enum avdecode_seek_flags {
 };
 
 // >= 0 on success
-extern int gs_avdecode_seek(gs_avdecode_ctx_t* ctx, int64_t timestamp,
+extern int gs_avdecode_seek(gs_avdecode_context_t* ctx, int64_t timestamp,
                             enum avdecode_seek_flags flags);
+
+extern void gs_avdecode_request_upload_to_texture(gs_command_buffer_t* cb, gs_avdecode_context_t* ctx, gs_asset_texture_t* tex);
 
 
 //////////////////////////////////
@@ -81,7 +157,6 @@ extern int gs_avdecode_seek(gs_avdecode_ctx_t* ctx, int64_t timestamp,
 enum avdecode_pthread_states {
         AVDECODE_START, // Worker thread will change to running ASAP
         AVDECODE_DONE, // Worker thread will await state changes (and not touch anything else)
-        // NOTE: the worker thread will not rewind by itself
 
         AVDECODE_RUNNING, // Worker thread is decoding, on complete it changes to DONE
         AVDECODE_STOP, // Will froce decoding thread to switch to DONE ASAP
@@ -107,7 +182,7 @@ typedef struct gs_avdecode_pthread_s {
         pthread_t thread;
         pthread_attr_t attr;
 
-        gs_avdecode_ctx_t video;
+        gs_avdecode_context_t video;
 
         _Atomic int new_frame;
         _Atomic int loop; // 0 = don't loop, >0 loop x times, <0 loop forever
@@ -117,6 +192,7 @@ typedef struct gs_avdecode_pthread_s {
 ////////////////////
 // if init_decoder is true it will call gs_avdecode_init(ctxp->video)
 // The thread is detached, doing pthread_join is not needed.
+// returns 0 on success
 extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path, int init_decoder,
                                           const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
 
@@ -129,6 +205,9 @@ extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const cha
                         (_ctxp)->new_frame = AVDECODE_DECODING;         \
                 }                                                       \
         } while(0)
+// returns 1 on succesfull upload request
+// returns 0 on failed
+extern int gs_avdecode_try_request_upload_to_texture(gs_command_buffer_t* cb, gs_avdecode_pthread_t* ctx, gs_asset_texture_t* tex);
 
 
 
@@ -141,7 +220,7 @@ extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const cha
 #ifdef GS_AVDECODE_IMPL
 
 static int
-_gs_avdecode_decode_packet(gs_avdecode_ctx_t* ctx, AVCodecContext *dec, const AVPacket *pkt, int new_pkt)
+_gs_avdecode_decode_packet(gs_avdecode_context_t* ctx, AVCodecContext *dec, const AVPacket *pkt, int new_pkt)
 {
         int ret = 0;
 
@@ -192,7 +271,7 @@ _gs_avdecode_decode_packet(gs_avdecode_ctx_t* ctx, AVCodecContext *dec, const AV
 
 static int
 _gs_avdecode_open_codec_context(
-        gs_avdecode_ctx_t* ctx,
+        gs_avdecode_context_t* ctx,
         int *stream_idx,
         AVCodecContext **dec_ctx,
         AVFormatContext *fmt_ctx,
@@ -261,10 +340,10 @@ _gs_avdecode_open_codec_context(
 }
 
 int
-gs_avdecode_init(const char* path, gs_avdecode_ctx_t* ctx, const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out)
+gs_avdecode_init(const char* path, gs_avdecode_context_t* ctx, const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out)
 {
         if (!ctx) return 2;
-        *ctx =  (gs_avdecode_ctx_t){0};
+        *ctx =  (gs_avdecode_context_t){0};
         ctx->video_stream_idx = -1;
         ctx->audio_stream_idx = -1;
         ctx->src_filename = path;
@@ -360,7 +439,7 @@ end:
 }
 
 int
-gs_avdecode_next_frame(gs_avdecode_ctx_t* ctx)
+gs_avdecode_next_frame(gs_avdecode_context_t* ctx)
 {
         int skip_packet;
         int ret;
@@ -393,7 +472,7 @@ gs_avdecode_next_frame(gs_avdecode_ctx_t* ctx)
 }
 
 void
-gs_avdecode_destroy(gs_avdecode_ctx_t* ctx, gs_asset_texture_t* tex)
+gs_avdecode_destroy(gs_avdecode_context_t* ctx, gs_asset_texture_t* tex)
 {
         if (!ctx) return;
         // flush the decoders
@@ -416,22 +495,28 @@ gs_avdecode_destroy(gs_avdecode_ctx_t* ctx, gs_asset_texture_t* tex)
 }
 
 int
-gs_avdecode_seek(gs_avdecode_ctx_t* ctx, int64_t timestamp,
+gs_avdecode_seek(gs_avdecode_context_t* ctx, int64_t timestamp,
                             enum avdecode_seek_flags flags)
 {
         if (!ctx) return -1;
         if (!ctx->fmt_ctx) return -1;
 
+        ctx->read_next_packet = 1; // not sure if this is right...
         return av_seek_frame(ctx->fmt_ctx, ctx->video_stream_idx, timestamp, flags);
 }
 
 
 
+////////////////////
+// NOTE(Halvard):
+// The thread uses the gs_platform functions elapsed time and sleep.
+// In general it should be safe to assume that the platofrm implementation
+// of these functions are MT-safe. However that is not a guarantee.
 static void*
 _gs_avdecode_pthread_player(void* data)
 {
         gs_avdecode_pthread_t* ctxp = data;
-        gs_avdecode_ctx_t* ctx = &ctxp->video;
+        gs_avdecode_context_t* ctx = &ctxp->video;
 
 
 pthread_decoder_start:
@@ -525,6 +610,13 @@ pthread_decoder_start:
         goto pthread_decoder_start;
 }
 
+void
+gs_avdecode_request_upload_to_texture(gs_command_buffer_t* cb, gs_avdecode_context_t* ctx, gs_asset_texture_t* tex)
+{
+        memcpy(*tex->desc.data, *ctx->img, ctx->img_sz);
+        gs_graphics_texture_request_update(cb, tex->hndl, &tex->desc);
+}
+
 int
 gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path, int init_decoder,
                                const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out)
@@ -537,14 +629,33 @@ gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path, in
                 if (res) return res;
         }
 
-        pthread_attr_init(&ctxp->attr);
+        int pares = pthread_attr_init(&ctxp->attr);
+        if (pares) {
+                if (init_decoder) gs_avdecode_destroy(&ctxp->video, out);
+                return pares;
+        }
         pthread_attr_setdetachstate(&ctxp->attr, PTHREAD_CREATE_DETACHED);
 
-        pthread_create(&ctxp->thread, &ctxp->attr, &_gs_avdecode_pthread_player, ctxp);
+        int pres = pthread_create(&ctxp->thread, &ctxp->attr, &_gs_avdecode_pthread_player, ctxp);
         pthread_attr_destroy(&ctxp->attr);
-        // TODO: error code from pthread functions as well
+        if (pres) {
+                if (init_decoder) gs_avdecode_destroy(&ctxp->video, out);
+                return pres;
+        }
 
         return res;
+}
+
+int
+gs_avdecode_try_request_upload_to_texture(gs_command_buffer_t* cb, gs_avdecode_pthread_t* ctxp, gs_asset_texture_t* tex)
+{
+        int check = AVDECODE_FRAME_COMPLETE;
+        int ret = atomic_compare_exchange_strong(&ctxp->new_frame, &check, AVDECODE_WAIT);
+        if (ret) {
+                gs_avdecode_request_upload_to_texture(cb, &ctxp->video, tex);
+                ctxp->new_frame = AVDECODE_DECODING;
+        }
+        return ret;
 }
 
 #endif // GS_AVDECODE_IMPL

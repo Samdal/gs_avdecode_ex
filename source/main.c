@@ -1,5 +1,6 @@
 #include <gs/gs.h>
 #include <gs/util/gs_idraw.h>
+
 #define GS_AVDECODE_IMPL
 #include "gs_avdecode.h"
 
@@ -8,10 +9,11 @@ static gs_command_buffer_t cb;
 
 static const char* filename;
 
-static gs_asset_texture_t tex;
+static gs_avdecode_context_t video;
+ gs_asset_texture_t tex;
+
+static gs_avdecode_pthread_t pvideo = {.loop = 1};
 static gs_asset_texture_t ptex;
-static gs_avdecode_ctx_t video;
-static gs_avdecode_pthread_t pvideo;
 
 void app_update()
 {
@@ -29,22 +31,36 @@ void app_update()
         gsi_camera2D(&gsi, fb.x, fb.y);
 
         int res = gs_avdecode_next_frame(&video);
-        memcpy(*tex.desc.data, *video.img, video.img_sz);
-        gs_graphics_texture_request_update(&cb, tex.hndl, &tex.desc);
+        gs_avdecode_request_upload_to_texture(&cb, &video, &tex);
 
         gsi_texture(&gsi, tex.hndl);
         gsi_rectvd(&gsi, gs_v2s(0.0f), fb, gs_v2s(0.f), gs_v2s(1.f), GS_COLOR_WHITE, GS_GRAPHICS_PRIMITIVE_TRIANGLES);
 
+        static int paused;
+        if (gs_platform_key_pressed(GS_KEYCODE_SPACE)) {
+                static int toggle;
+                toggle = !toggle;
+                if (toggle) {
+                        int check = AVDECODE_RUNNING;
+                        paused = atomic_compare_exchange_strong(&pvideo.state, &check, AVDECODE_STOP);
+                } else {
+                        int check = AVDECODE_DONE;
+                        int play = atomic_compare_exchange_strong(&pvideo.state, &check, AVDECODE_START);
+                        if (play) paused = 0;
+                }
+        }
+
         if (pvideo.new_frame == AVDECODE_FRAME_COMPLETE) {
-                gs_avdecode_try_aquire_m(&pvideo,
-                        memcpy(*ptex.desc.data, *pvideo.video.img, pvideo.video.img_sz);
-                        gs_graphics_texture_request_update(&cb, ptex.hndl, &ptex.desc);
-                );
-        } else if (pvideo.state == AVDECODE_DONE) {
-                //gs_avdecode_seek(&pvideo.video, INT64_MIN, AVDECODE_SEEK_BACKWARD);
-                //pvideo.state = AVDECODE_START;
+                gs_avdecode_try_request_upload_to_texture(&cb, &pvideo, &ptex);
+        } else if (pvideo.state == AVDECODE_DONE && !paused) {
+#if 1
                 pvideo.state = AVDECODE_DIE;
+                // while(pvideo.state != AVDECODE_DEAD) ;
                 gs_quit();
+#else
+                gs_avdecode_seek(&pvideo.video, INT64_MIN, AVDECODE_SEEK_BACKWARD);
+                pvideo.state = AVDECODE_START;
+#endif
         }
 
         gsi_texture(&gsi, ptex.hndl);
@@ -59,9 +75,10 @@ void app_init()
         cb = gs_command_buffer_new();
         gsi = gs_immediate_draw_new();
 
+        av_log_set_level(AV_LOG_QUIET); // remove stdout messages
+
         int res = gs_avdecode_init(filename, &video, NULL, &tex);
 
-        pvideo.loop = 2;
         int res2 = gs_avdecode_pthread_play_video(&pvideo, filename, 1, NULL, &ptex);
 
         if (res || res2) {
