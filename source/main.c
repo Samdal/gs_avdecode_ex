@@ -2,7 +2,7 @@
 #include <gs/util/gs_idraw.h>
 
 #define GS_AVDECODE_IMPL
-#include "gs_avdecode.h"
+#include "../third_party/include/gs_avdecode/gs_avdecode.h"
 
 static gs_immediate_draw_t gsi;
 static gs_command_buffer_t cb;

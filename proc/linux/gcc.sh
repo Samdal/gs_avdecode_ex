@@ -8,7 +8,7 @@ proj_name=App
 proj_root_dir=$(pwd)/../
 
 flags=(
-	-std=gnu99 -w -ldl -lGL -lX11 -pthread -lXi
+	-std=gnu99 -w -ldl -lGL -lX11 -pthread -lXi -lavformat -lavcodec -lswscale -lavutil
 )
 
 # Include directories

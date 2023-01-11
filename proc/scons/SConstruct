@@ -105,7 +105,8 @@ if env["platform"] == "linux":
         env.Append(CCFLAGS=["-fPIC", "-O3", "-std=gnu99"])
         env.Append(LINKFLAGS=["-s"])
 
-    env.Append(LINKFLAGS=["-ldl", "-lX11", "-lXi", "-lm", "-pthread"])
+    env.Append(LINKFLAGS=["-ldl", "-lX11", "-lXi", "-lm", "-pthread",
+                          "-lavformat", "-lavcodec", "-lswscale", "-lavutil"])
     if env["OpenGL"] == "true":
         env.Append(CCFLAGS=["-lGL"])
 

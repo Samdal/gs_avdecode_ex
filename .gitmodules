@@ -1,3 +1,6 @@
 [submodule "third_party/include/gs"]
 	path = third_party/include/gs
 	url = https://github.com/mrfrenik/gunslinger
+[submodule "third_party/include/gs_avdecode"]
+	path = third_party/include/gs_avdecode
+	url = https://github.com/Samdal/gs_avdecode

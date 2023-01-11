@@ -4,7 +4,7 @@
 CC     = gcc
 LINKER = $(CC)
 CFLAGS =  -O0 -pthread -g -std=gnu99
-LFLAGS = -ldl -lX11 -lXi -lm -lpthread -lavcodec -lavformat -lavcodec -lswresample -lswscale -lavutil -lm
+LFLAGS = -ldl -lX11 -lXi -lm -lpthread -lavformat -lavcodec -lswscale -lavutil -lm
 
 TARGET   = App
 
