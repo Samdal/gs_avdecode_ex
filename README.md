@@ -2,13 +2,13 @@
 https://github.com/Samdal/gs_avdecode
 
 
-The example includes both a "render one new frame every frame" example,
-using the functions.
-
-And one example where a thread for decoding is set up, freeing the main thread.
-
+The example includes a "render one new frame every frame" example, and a decoder thread example.
 
 Documentation is in the header file of gs_avdecode.h
+
+
+ffmpeg license:
+https://www.ffmpeg.org/legal.html
 
 ### The following is the license of gs_avdecode
 
