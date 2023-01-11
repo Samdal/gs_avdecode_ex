@@ -1,4 +1,4 @@
-# GS_AVDECODE example
+# gs_avdecode example
 https://github.com/Samdal/gs_avdecode
 
 
