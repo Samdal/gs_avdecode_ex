@@ -1,5 +1,8 @@
-#include <gs/gs.h>
-#include <gs/util/gs_idraw.h>
+#define GS_IMPL
+#include "../third_party/include/gs/gs.h"
+
+#define GS_IMMEDIATE_DRAW_IMPL
+#include "../third_party/include/gs/util/gs_idraw.h"
 
 #define GS_AVDECODE_IMPL
 #include "../third_party/include/gs_avdecode/gs_avdecode.h"
